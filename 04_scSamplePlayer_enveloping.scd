@@ -1,3 +1,4 @@
+//See Bufrd SynthDef
 (
 s.options.memSize = 1000000;
 s.waitForBoot{ fork{
@@ -23,50 +24,33 @@ s.waitForBoot{ fork{
 		temparray = temparray.insert(0, "/sbuf".asString); //insert the OSC tag at the front
 		proc.sendBundle(0.0, temparray);
 	}, "/getwaveform");
-	//A phasor based SynthDef for to index through the buffer
-	//We will be reading out the phasor signal to an audio bus (see Bus)
-	//Also a normalized version of the signal wil be read out to a control bus
-	//which will eventually be sent to the processing patch for cursor control
-	SynthDef(\bufix, {
-		arg buf, spd=1, start=0.0, end=1.0, abus, kbus;
-		var indexer, indexernorm;
-		//Phasor.ar's 2nd arg is looking for a rate
-		//This is the speed per sample
-		//BufRateScale basically compares the sc sample rate
-		//with the sample rate of the sample
-		//BufFrames.kr is the total number of samples in the buffer
-		indexer = Phasor.ar(0, BufRateScale.kr(buf)*spd,
-			start*BufFrames.kr(buf), end*BufFrames.kr(buf));
-		indexernorm = indexer.linlin(0.0, BufFrames.kr(buf), 0.0, 1.0);
-		Out.ar(abus, indexer);
-		Out.kr(kbus, indexernorm);
-	}).add;
-	//SynthDef to read the buffer
-	SynthDef(\bufrd,{
-		arg och=0, buf, idxbus, gate=1, atk=0.015, sus=1, decay=0, rel=0.1, crv=2.neg;
-		var sig, idx, env;
-		env = EnvGen.ar( Env.adsr(atk, decay, sus, rel, curve:crv), gate, doneAction:2);
-		idx = In.ar(idxbus);
-		sig = BufRd.ar(2, buf, idx);
-		Out.ar(och, sig*env);
-	}).add;
-	//To read through the buffer we start a phasor index
-	//then pass the index through an audio bus to a \bufrd synth
-	//SuperCollider, since it is a REPL language, has a group system
-	//for scheduling order of tasks see Group
-	//We create the groups and add the \bufix synth to a group befor the \bufrd group
-	//Creates an array of 11 groups one following the other
-	gr = [Group.new(s)];
-	10.do{ |ix| gr = gr.add( Group.after(gr[ix]) ) };
-	//we'll use simple variables for the synths for now but later
-	//we'll need something more elaborate to keep track of the different synths
-	//Synth args: synthdef name, argument name/argument value pairs in an array, target group
-	//Also notice the index is going to audio bus #30 and the \bufpl synth is reading its index
-	//from audio bus #30
+	//Had to combine two synthdefs
+	//To make an internal envelope for every time the sample/part sample repeats
+	// 1) calculate the release time in number of samples
+	// 2) figure out which direction you are going
+	// 3) create a trigger that will trigger either rel#of-samples before the end time or rel#of-samples before the start time, depending on which direction you are going
+	// 4) trigger the release of the envelope, then trigger the attack when the sample restarts
+	SynthDef(\bufrd, {
+	arg buf, spd=1, start=0.0, end=1.0, kbus, och=0,  atk=0.015, sus=1, decay=0, rel=0.5, crv=2.neg;
+	var index, indexnorm;
+	var sig, env, trig, relsamps, dir;
+	index = Phasor.ar( 0, BufRateScale.kr(buf)*spd, start*BufFrames.kr(buf), end*BufFrames.kr(buf) );
+	indexnorm = index.linlin(0.0, BufFrames.kr(buf), 0.0, 1.0);
+	Out.kr(kbus, indexnorm);
+	relsamps = SampleRate.ir()*rel; //release time in #ofsamples
+	dir = spd < 0; //gives 1 if negative, 0 if positive
+	//select makes the trigger rel#ofsamples before the end time if going forward or rel#ofsamples before the start time if going backwards; the boolean operators (<= >=) yield 1 if true or 0 if false perfect for the envelope gate/trigger; 0 releases the envelope and 1 attacks. So when moving forward when the index gets to the release time, the trigger turns 0 because it is > the trigger time and when the index resets to start the sample again it turns to 1 because it is <= to the trigger time
+	trig = Select.ar( dir, [
+		( index <= ( (BufFrames.kr(buf)*end) - relsamps )  ),
+		( index >= ( (BufFrames.kr(buf)*start) + relsamps )  )
+	] );
+	env = EnvGen.ar( Env.adsr(atk, decay, sus, rel, curve:crv), trig); //trigger the envelope
+	sig = BufRd.ar(2, buf, index);
+	Out.ar(och, sig*env);
+}).add;
 	0.1.wait; //little pause here so that the synthdefs are registered before trying to instantiate them
 	indexbus = Bus.control(s);
-	a = Synth(\bufix, [\buf, samps[0], \abus, 30, \kbus, indexbus], gr[0]); //sending normalized sig to the controlbus 'indexbus'
-	b = Synth(\bufrd, [\buf, samps[0], \idxbus, 30], gr[1]);
+	b = Synth(\bufrd, [\buf, samps[0],]);
 	//Send the normalized Phasor signal to Processing so it can scroll through the waveform
 	//Use OSCdef so that Processing requests the data and then SC sends it
 	//We are going to use the Bus object on the sclang side to create some control bus proxies
@@ -80,13 +64,8 @@ s.waitForBoot{ fork{
 	OSCdef(\startendpts, { |msg|
 		var start = msg[1].asFloat;
 		var end = msg[2].asFloat;
-		a.set(\start, start, \end, end);
+		b.set(\start, start, \end, end);
 	}, "/startendpts");
 } }//end fork; end s.waitForBoot
 )
-
-
-
-
-
-
+b.set(\rel, 2, \atk, 3.5, \spd, -0.6, \crv, 4);
