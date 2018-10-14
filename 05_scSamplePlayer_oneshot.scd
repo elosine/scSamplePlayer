@@ -1,4 +1,4 @@
-//See Bufrd SynthDef
+//See bufrd synthdef
 (
 s.options.memSize = 1000000;
 s.waitForBoot{ fork{
@@ -24,17 +24,19 @@ s.waitForBoot{ fork{
 		temparray = temparray.insert(0, "/sbuf".asString); //insert the OSC tag at the front
 		proc.sendBundle(0.0, temparray);
 	}, "/getwaveform");
-	//Had to combine two synthdefs
-	//To make an internal envelope for every time the sample/part sample repeats
-	// 1) calculate the release time in number of samples
-	// 2) figure out which direction you are going
-	// 3) create a trigger that will trigger either rel#of-samples before the end time or rel#of-samples before the start time, depending on which direction you are going
-	// 4) trigger the release of the envelope, then trigger the attack when the sample restarts
-	SynthDef(\bufrd, {
-	arg buf, spd=1, start=0.0, end=1.0, kbus, och=0,  atk=0.015, sus=1, decay=0, rel=0.5, crv=2.neg;
+	//add t_trigstart to phasor.ar's first argument trig
+//this triggers phasor back to 0
+//the 't_' nomenclature gives a trigger rate argument
+//IOW, normally you would have to send a trig 0 then a trig 1 to trigger it back to the beginning
+//as the trig arg in Phasor.ar requires a change
+//A t_ trigger rate argument will automatically trigger the action without reseting to 0 first
+	//Also added the arg envdoneaction. This will allow external control over the envelope's doneAction arg
+	//doneAction:0 does nothing, doneAction:1 pauses the synth, and doneAction:2 kills the synth when the envelope has finished
+SynthDef(\bufrd, {
+	arg buf, spd=1, start=0.0, end=1.0, kbus, och=0,  atk=0.015, sus=1, decay=0, rel=0.05, crv=2.neg, t_trigstart=0, envdoneact=0;
 	var index, indexnorm;
 	var sig, env, trig, relsamps, dir;
-	index = Phasor.ar( 0, BufRateScale.kr(buf)*spd, start*BufFrames.kr(buf), end*BufFrames.kr(buf) );
+	index = Phasor.ar( t_trigstart, BufRateScale.kr(buf)*spd, start*BufFrames.kr(buf), end*BufFrames.kr(buf) );
 	indexnorm = index.linlin(0.0, BufFrames.kr(buf), 0.0, 1.0);
 	Out.kr(kbus, indexnorm);
 	relsamps = SampleRate.ir()*rel; //release time in #ofsamples
@@ -44,13 +46,19 @@ s.waitForBoot{ fork{
 		( index <= ( (BufFrames.kr(buf)*end) - relsamps )  ),
 		( index >= ( (BufFrames.kr(buf)*start) + relsamps )  )
 	] );
-	env = EnvGen.ar( Env.adsr(atk, decay, sus, rel, curve:crv), trig); //trigger the envelope
+	env = EnvGen.ar( Env.adsr(atk, decay, sus, rel, curve:crv), trig, doneAction:envdoneact); //trigger the envelope
 	sig = BufRd.ar(2, buf, index);
 	Out.ar(och, sig*env);
 }).add;
+	//Had to combine two synthdefs
+	//To make an internal envelope for every time the sample/part sample repeats
+	// 1) calculate the release time in number of samples
+	// 2) figure out which direction you are going
+	// 3) create a trigger that will trigger either rel#of-samples before the end time or rel#of-samples before the start time, depending on which direction you are going
+	// 4) trigger the release of the envelope, then trigger the attack when the sample restarts
 	0.1.wait; //little pause here so that the synthdefs are registered before trying to instantiate them
 	indexbus = Bus.control(s);
-	b = Synth(\bufrd, [\buf, samps[0],]);
+	a = Synth(\bufrd, [\buf, samps[4],]);
 	//Send the normalized Phasor signal to Processing so it can scroll through the waveform
 	//Use OSCdef so that Processing requests the data and then SC sends it
 	//We are going to use the Bus object on the sclang side to create some control bus proxies
@@ -68,4 +76,10 @@ s.waitForBoot{ fork{
 	}, "/startendpts");
 } }//end fork; end s.waitForBoot
 )
-b.set(\rel, 2, \atk, 3.5, \spd, -0.6, \crv, 4);
+//send a set msg that restarts the sample and then pauses the synth after the envelope is done
+a.set(\spd, 0.3, \t_trigstart, 1, \envdoneact, 1)
+//to restart the synth us synth.run
+//here we change \envdoneact to 0 so that the synth loops again and then run it
+a.set(\envdoneact, 0).run
+//to retrigger add .run
+a.set(\spd, 0.3, \t_trigstart, 1, \envdoneact, 1).run

@@ -137,6 +137,7 @@ void mouseReleased() {
       float range1norm = norm(range1, tl, tr);
       float range2norm = norm(range2, tl, tr);
       osc.send("/startendpts", new Object[]{range1norm, range2norm}, sc);
+      println(range1norm +":"+ range2norm);
     } else {
       osc.send("/startendpts", new Object[]{0, 1}, sc);
     }
